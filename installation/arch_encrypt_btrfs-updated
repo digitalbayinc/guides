@@ -1,0 +1,256 @@
+# Download the archiso image from https://www.archlinux.org/download/
+# Copy to a usb-drive
+dd bs=4M if=archlinux.iso of=/dev/sdx status=progress oflag=sync # on linux
+
+# Boot from the usb.
+
+# Set your keymap
+loadkeys es
+
+# Connect to wifi network ...
+iwctl
+
+# Create 2 partitions 
+gdisk /dev/nvme0n1
+o
+n
+<enter>
+<enter>
++200M
+ef00
+n
+<enter>
+<enter>
+<enter>
+<enter>
+w
+
+# Create boot filesystem
+mkfs.fat -F32 /dev/nvme0n1p1
+
+# Create luks container (luks1 for compatibility with grub)
+cryptsetup luksFormat --type luks1 --cipher aes-xts-plain64 --hash sha512 --use-random --verify-passphrase /dev/nvme0n1p2
+
+# Create btrfs filesystem
+cryptsetup open /dev/nvme0n1p2 cryptroot
+mkfs -t btrfs --force -L cryptroot /dev/mapper/cryptroot
+
+# ... and subvolumes
+mount -t btrfs -o compress=lzo /dev/mapper/cryptroot /mnt
+btrfs su cr /mnt/@root
+btrfs su cr /mnt/@home
+btrfs su cr /mnt/@var
+btrfs su cr /mnt/@srv
+btrfs su cr /mnt/@opt
+btrfs su cr /mnt/@tmp
+btrfs su cr /mnt/@swap
+btrfs su cr /mnt/@.snapshots
+
+# Unmount and remount with the corect partitions
+umount /mnt
+
+# Remount the partitions
+mount -o noatime,compress=lzo,space_cache,subvol=@root /dev/nvme0n1p2 /mnt
+mkdir /mnt/{boot,home,var,srv,opt,tmp,swap,.snapshots}
+mount -o noatime,compress=lzo,space_cache,subvol=@home /dev/nvme0n1p2 /mnt/home
+mount -o noatime,compress=lzo,space_cache,subvol=@srv /dev/nvme0n1p2 /mnt/srv
+mount -o noatime,compress=lzo,space_cache,subvol=@tmp /dev/nvme0n1p2 /mnt/tmp
+mount -o noatime,compress=lzo,space_cache,subvol=@opt /dev/nvme0n1p2 /mnt/opt
+mount -o noatime,compress=lzo,space_cache,subvol=@.snapshots /dev/nvme0n1p2 /mnt/.snapshots
+mount -o nodatacow,subvol=@swap /dev/nvme0n1p2 /mnt/swap
+mount -o nodatacow,subvol=@var /dev/nvme0n1p2 /mnt/var
+mount /dev/nvme0n1p1 /mnt/boot
+
+# Install the system, wifi and some tools
+pacstrap /mnt base base-devel linux linux-firmware btrfs-progs snapper \
+                zsh mlocate htop net-tools wireless_tools wpa_supplicant \
+                dialog vim intel-ucode grub aria2 hping elinks bash-completion
+
+# Generate fstab
+genfstab -U /mnt >> /mnt/etc/fstab
+
+# Enter the new system
+arch-chroot /mnt
+
+# Setup swap file
+truncate -s 0 /swap/swapfile
+chattr +C /swap/swapfile
+btrfs property set /swap/swapfile compression none
+dd if=/dev/zero of=/swap/swapfile bs=1G count=16 status=progress
+chmod 600 /swap/swapfile
+mkswap /swap/swapfile
+swapon /swap/swapfile
+echo /swap/swapfile none swap defaults 0 0 >> /etc/fstab
+
+# Setup system clock
+ln -sf /usr/share/zoneinfo/America/Los_Angeles /etc/localtime
+hwclock --systohc
+
+# Set the hostname
+echo X1 > /etc/hostname
+
+# Set hosts
+echo 127.0.0.1   localhost >> /etc/hosts
+echo ::1         localhost >> /etc/hosts
+echo 127.0.1.1   X1.localdomain  X1 >> /etc/hosts
+vim /etc/hosts (add tabs in spaces)
+
+# Generate and set default locale
+vim /etc/locale.gen
+# Uncomment en_US.UTF-8
+locale-gen
+echo LANG=en_US.UTF-8 >> /etc/locale.conf
+
+# Set virtul console lang and font
+#echo KEYMAP=es > /etc/vconsole.conf
+#echo FONT=Lat2-Terminus16 >> /etc/vconsole.conf
+
+# Set password for root
+passwd
+
+# Create user
+useradd -mG wheel me
+passwd me
+
+# Configure mkinitcpio 
+vim /etc/mkinitcpio.conf
+# insert btrfs in MODULES=()
+MODULES=(btrfs)
+# Embed btrfs to initramfs
+BINARIES=(/usr/sbin/btrfs)
+# Add 'encrypt' to HOOKS before filesystems
+HOOKS="base udev autodetect modconf block encrypt filesystems keyboard fsck"
+
+# Regenerate initrd image 
+mkinitcpio -p linux
+
+# Setup grub
+vim /etc/default/grub
+# Edit /etc/default/grub, add GRUB_ENABLE_CRYPTODISK=y and GRUB_DISABLE_SUBMENU=y
+GRUB_CMDLINE_LINUX="cryptdevice=/dev/sda1:cryptroot:allow-discards"
+
+# Extra kernel options to add to GRUB_CMDLINE_LINUX (for old laptop 2011-2012)
+# https://forum.manjaro.org/t/howto-power-savings-setup-20180906/1445
+# ACPI
+acpi_osi=Linux acpi_osi='!Windows 2012' acpi=force acpi_enforce_resources=lax
+# i915
+i915.modeset=1 i915.fastboot=1 i915.enable_rc6=1 i915.enable_fbc=1 i915.lvds_downclock=1 i915.semaphores=1 
+# Varios power saving and performance settings
+net.ifnames=0 spectre_v2=off nopti nowatchdog vsyscall=emulate ath9k.ps_enable=1 pcie_aspm=force ipv6.disable=1
+# Audit
+audit=1 audit_backlog_limit=8192
+# Quite boot
+quiet loglevel=3 rd.systemd.show_status=auto rd.udev.log_priority=3
+
+# My actual CMDLINE for ThinkPad T480s
+BOOT_IMAGE=/vmlinuz-linux-zen root=/dev/mapper/cryptroot rw rootflags=subvol=root \
+cryptdevice=/dev/nvme0n1p4:cryptroot:allow-discards rd.luks.options=discards rw \
+acpi_osi=! "acpi_osi=Windows 2015" acpi=force acpi_enforce_resources=lax drm.vblankoffdelay=1 acpi_backlight=native \
+i915.modeset=1 i915.fastboot=1 i915.enable_psr=1 i915.enable_guc=3 i915.enable_fbc=1 \
+net.ifnames=0 spectre_v2=off nopti nowatchdog vsyscall=emulate audit=1 audit_backlog_limit=8192 \
+fan_control=1 psmouse.elantech_smbus=0 ec_sys.write_support=1 \
+quiet loglevel=3 rd.systemd.show_status=auto rd.udev.log_priority=3
+
+# Install grub and create configuration
+grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# Enable networks
+systemctl enable NetworkManager
+systemctl enable bluetooth
+systemctl enable org.cups.cupsd
+
+EDITOR=vim visudo
+(uncomment %wheel ALL=(ALL) ALL)
+
+# Exit new system and go into the cd shell
+exit
+
+# Unmount all partitions
+umount -a
+
+# Reboot into the new system, don't forget to remove the usb
+reboot
+
+--------------------------------------------------------------------------------------
+
+# Create keyfile for paswordless login
+dd bs=512 count=4 if=/dev/urandom of=/crypto_keyfile.bin
+cryptsetup luksAddKey /dev/sda1 /crypto_keyfile.bin
+and add to /etc/mkinitcpio.conf
+FILES=(/crypto_keyfile.bin)
+# run:
+mkinitcpio -p linux
+# Reboot again, you’ll only need to enter your password once.
+reboot
+
+# Secure keyfile and /boot
+chmod 000 /crypto_keyfile.bin  # actually, even root doesn't need to access this
+chmod -R g-rwx,o-rwx /boot     # just to be safe
+
+# Optional: Install Aur helper, X, WM, Software and Configure the System
+
+# Install AUR helper - yaourt
+wget https://aur.cryptroot.org/cgit/aur.git/snapshot/package-query.tar.gz
+wget https://aur.cryptroot.org/cgit/aur.git/snapshot/yaourt.tar.gz
+# Install as regular user (extract, run makepkg, pacman -U)
+
+::TODO:: Update the installed packages. Finish configuration.
+
+# Install Zen Kernel , X, DE, some basic tools
+pacman -S linux linux-headers irqbalance cpupower x86_energy_perf_policy \
+pacman -S xorg-server xf86-video-intel xf86-video-nouveau xf86-input-synaptics \
+            xorg-xbacklight xorg-xinit xterm rxvt-unicode compton openbox tint2 \
+            conky  dmenu  volumeicon slock feh nitrogen scrot xarchiver p7zip \
+            unzip unrar rfkill ttf-liberation ttf-droid ttf-hack terminus-font \
+            powertop wget whois ethtool archey3 gvim
+
+# Look and feel
+pacman -S gtk-engine-murrine numix-themes faenza-icon-theme
+
+# Office programs
+
+# Some graphics applications
+pacman -S gimp inkscape dia mtpaint gpicview graphicsmagick cups-pdf simple-scan
+
+# Utilities
+pacman -S stardict-lite aspell-en aspell-es hunspell-en hunspell-es \
+            mythes-en mythes-es hyphen-en hyphen-es perl-file-mimeinfo \
+            keepassxc cherrytree zim gprename galculator gsimplecal veracrypt
+
+# System tools
+pacman -S bleachbit nethogs gparted dosfstools ntfs-3g grsync gsmartcontrol \
+            lxterminal lxappearance lxtask obconf geany scite sshfs gpart \
+            nmap macchanger ghex yajl pssh wpa_actiond ifplugd gvfs dnsutils\
+            ifplugd gvfs dnsutils grsync xdotool alsa-plugins alsa-utils lsof
+
+# Multimedia
+pacman -S avidemux-gtk audacity guvcview gtk-recordmydesktop pragha winff \
+            handbrake mpv easytag smplayer deadbeef gst-plugins-bad \
+            gst-plugins-ugly gst-libav openshot libquicktime \
+            frei0r-plugins flashplayer youtube-dl rtmpdump atomicparsley
+
+# Network
+pacman -S pidgin pidgin-otr purple-skypeweb linphone xchat transmission-gtk \
+            uget filezilla claws-mail opera wireshark-gtk openvpn pptpclient \
+            xl2tpd torsocks
+
+# Virtualisation
+pacman -S virtualbox virtualbox-host-dkms
+
+# Nvidia Optimus
+pacman -S --needed bumblebee primus bbswitch-dkms libva-intel-driver \
+            libva-mesa-driver  libva-vdpau-driver mesa-vdpau nvidia-dkms \
+            nvidia-utils nvidia-settings mesa-demos
+
+# Development
+pacman -S nginx-mainline php php-apcu php-fpm php-gd php-mcrypt php-snmp \
+            php-tidy composer apache nghttp2 lighttpd openvpn \
+            mariadb xdebug nodejs ruby npm colordiff git jdk8-openjdk
+
+# Security
+pacman -S rkhunter clamav gufw
+
+yaourt -S   ananicy-git cdw csslint dbeaver freeplane freshplayerplugin  gtk-theme-numix-sx icecat-bin \
+            lostfiles nodejs-jshint pepper-flash playerctl profile-cleaner purple-facebook purple-hangouts-hg \
+            virtualbox-ext-oracle clipit spacefm-git scite sublime-text-dev megasync thermald genymotion
