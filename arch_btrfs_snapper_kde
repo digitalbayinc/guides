@@ -1,0 +1,173 @@
+localectl list-keymaps | grep US
+
+loadkeys (first result from previous line)
+
+iwctl
+
+timedatectl set-ntp true
+
+pacman -Syy reflector
+
+reflector -c US -a 6 --sort rate --save /etc/pacman.d/mirrorlist
+
+pacman -Syy
+
+gdisk /dev/nvme0n1
+
+o
+
+n
+<enter>
+<enter>
++200M
+ef00
+
+n
+<enter>
+<enter>
+<enter>
+<enter>
+
+w
+
+mkfs.fat -F32 /dev/nvme0n1p1
+mkfs.btrfs /dev/nvme0n1p2
+
+mount /dev/nvme0n1p2 /mnt
+btrfs su cr /mnt/@root
+btrfs su cr /mnt/@home
+btrfs su cr /mnt/@var
+btrfs su cr /mnt/@srv
+btrfs su cr /mnt/@opt
+btrfs su cr /mnt/@tmp
+btrfs su cr /mnt/@swap
+btrfs su cr /mnt/@.snapshots
+umount /mnt
+
+mount -o noatime,compress=lzo,space_cache,subvol=@root /dev/nvme0n1p2 /mnt
+mkdir /mnt/{boot,home,var,srv,opt,tmp,swap,.snapshots}
+mount -o noatime,compress=lzo,space_cache,subvol=@home /dev/nvme0n1p2 /mnt/home
+mount -o noatime,compress=lzo,space_cache,subvol=@srv /dev/nvme0n1p2 /mnt/srv
+mount -o noatime,compress=lzo,space_cache,subvol=@tmp /dev/nvme0n1p2 /mnt/tmp
+mount -o noatime,compress=lzo,space_cache,subvol=@opt /dev/nvme0n1p2 /mnt/opt
+mount -o noatime,compress=lzo,space_cache,subvol=@.snapshots /dev/nvme0n1p2 /mnt/.snapshots
+mount -o nodatacow,subvol=@swap /dev/nvme0n1p2 /mnt/swap
+mount -o nodatacow,subvol=@var /dev/nvme0n1p2 /mnt/var
+mount /dev/nvme0n1p1 /mnt/boot
+
+pacstrap /mnt base linux linux-firmware vim intel-ucode btrfs-progs snapper
+
+genfstab -U /mnt >> /mnt/etc/fstab
+
+arch-chroot /mnt
+
+truncate -s 0 /swap/swapfile
+
+chattr +C /swap/swapfile
+
+btrfs property set /swap/swapfile compression none
+dd if=/dev/zero of=/swap/swapfile bs=1G count=16 status=progress
+
+chmod 600 /swap/swapfile
+mkswap /swap/swapfile
+swapon /swap/swapfile
+
+echo /swap/swapfile none swap defaults 0 0 >> /etc/fstab
+
+ln -sf /usr/share/zoneinfo/America/Los_Angeles /etc/localtime
+hwclock --systohc
+
+vim /etc/locale.gen 
+(uncomment en_US.UTF-8 UTF-8)
+
+locale-gen
+
+echo LANG=en_US.UTF-8 >> /etc/locale.conf
+
+echo KEYMAP=(result from first line) >> /etc/vconsole.conf
+
+echo X1 >> /etc/hostname
+
+echo 127.0.0.1   localhost >> /etc/hosts
+echo ::1         localhost >> /etc/hosts
+echo 127.0.1.1   X1.localdomain  X1 >> /etc/hosts
+vim /etc/hosts (add tabs in spaces)
+
+passwd
+(enter root password)
+
+pacman -S grub grub-btrfs efibootmgr networkmanager network-manager-applet wpa_supplicant dialog os-prober mtools dosfstools base-devel linux-headers git reflector bluez bluez-utils cups xdg-utils xdg-user-dirs
+
+vim /etc/mkinitcpio.conf
+(insert btrfs in MODULES=() )
+(should look like this: MODULES=(btrfs) )
+
+mkinitcpio -p linux
+
+grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+grub-mkconfig -o /boot/grub/grub.cfg
+
+systemctl enable NetworkManager
+systemctl enable bluetooth
+systemctl enable org.cups.cupsd
+
+useradd -mG wheel me
+passwd me
+(enter user password)
+
+EDITOR=vim visudo
+(uncomment %wheel ALL=(ALL) ALL)
+
+exit
+umount -a
+reboot
+
+--------------------------------------------------------------------------------------
+
+nmtui
+
+(to see subvolumes)
+sudo btrfs subvol list -p /
+
+sudo pacman -S xorg sddm xf86-video-qxl xf86-video-intel xf86-video-nouveau nvidia nvidia-utils plasma kde-applications packagekit-qt5 firefox zsh thunderbird veracrypt obs-studio digikam darktable keepassxc
+
+sudo systemctl enable sddm
+
+reboot
+
+--------------------------------------------------------------------------------------
+
+su -
+
+umount /.snapshots/
+rm -rf /.snapshots/
+
+snapper -c root create-config /
+
+vim /etc/snapper/configs/roots
+(update ALLOW_USERS="" to ALLOW_USERS="me")
+(change TIMELINE_LIMIT_YEARLY to 0)
+(change TIMELINE_LIMIT_MONTHLY to 7)
+(change TIMELINE_LIMIT_WEEKLY to 10)
+(change TIMELINE_LIMIT_DAILY to 8)
+(change TIMELINE_LIMIT_HOURLY to 5)
+
+chmod a+rx /.snapshots/
+systemctl start snapper-timeline.timer
+systemctl enable snapper-timeline.timer
+systemctl enable snapper-cleanup.timer
+systemctl start snapper-cleanup.timer
+systemctl start grub-btrfs.path
+systemctl enable grub-btrfs.path
+
+exit
+
+git clone https://aur.archlinux.org/snapper-gui-git.git
+cd snapper-gui-git/
+makepkg -si PKGBUILD
+
+git clone https://aur.archlinux.org/yay.git
+cd yay
+makepkg -si PKGBUILD
+
+yay -S joplin teams brave-bin
