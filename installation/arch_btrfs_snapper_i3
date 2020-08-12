@@ -129,7 +129,7 @@ nmtui
 (to see subvolumes)
 sudo btrfs subvol list -p /
 
-sudo pacman -S xorg xorg-xinit xf86-video-qxl xf86-video-intel xf86-video-nouveau nvidia nvidia-utils i3-gaps i3lock i3status i3blocks dmenu terminator firefox zsh thunderbird veracrypt obs-studio digikam darktable keepassxc
+sudo pacman -S xorg xorg-xinit xf86-video-qxl xf86-video-intel xf86-video-nouveau nvidia nvidia-utils i3-gaps i3lock i3status i3blocks dmenu rofi terminator firefox zsh thunderbird veracrypt obs-studio digikam darktable keepassxc
 sudo cp /etc/x11/xinit/xinitrc ~/.xinitrc
 sudo vim .xinitrc 
 (delete lines at end after last fi)
